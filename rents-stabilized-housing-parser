@@ -1,0 +1,217 @@
+# Step 2: Inspect your specific PDF file - 2017bronxbldgs.pdf
+
+import pandas as pd
+import pdfplumber
+from pathlib import Path
+
+def inspect_pdf(pdf_path):
+    """Learn what's inside your PDF"""
+    print(f"Inspecting: {pdf_path}")
+    
+    with pdfplumber.open(pdf_path) as pdf:
+        print(f"Number of pages: {len(pdf.pages)}")
+        
+        # Look at first page
+        first_page = pdf.pages[0]
+        print(f"Page size: {first_page.width} x {first_page.height}")
+        
+        # Get some text to see what we're working with
+        text_sample = first_page.extract_text()
+        if text_sample:
+            print("First 200 characters of text:")
+            print(text_sample[:200])
+            print("...")
+        
+        # Check if there are tables
+        tables = first_page.extract_tables()
+        print(f"Tables found on first page: {len(tables)}")
+        
+        if tables:
+            print("First table preview:")
+            for i, row in enumerate(tables[0][:3]):  # Show first 3 rows
+                print(f"Row {i}: {row}")
+
+# YOUR SPECIFIC FILE - just run this!
+pdf_file = "2017queensbldgs.pdf"
+inspect_pdf(pdf_file)
+
+# Alternative if you get a "file not found" error:
+# Make sure the PDF is in the same folder as this Python script
+# Or use the full path like:
+# pdf_file = "C:/path/to/your/2017bronxbldgs.pdf"
+
+print("\n" + "="*50)
+print("WHAT TO LOOK FOR IN THE OUTPUT:")
+print("1. How many pages does your PDF have?")
+print("2. Does it say 'Tables found on first page: X' where X > 0?")
+print("3. Look at the text sample - does it look like building data?")
+print("4. If tables are found, look at the table preview - what are the column headers?")
+print("="*50)
+
+
+
+import pdfplumber
+
+pdf_path = "2017queensbldgs.pdf" #adjust if needed
+with pdfplumber.open(pdf_path) as pdf:
+    page = pdf.pages[0]
+    text = page.extract_text()
+    
+    # Split into lines and take the first 20 (you can adjust N)
+    lines = text.split("\n")
+    N = 20
+    print(f"Showing first {N} lines of raw text:\n")
+    for idx, line in enumerate(lines[:N], start=1):
+        # We’ll show line numbers to help pinpoint headers
+        print(f"{idx:02d}: {line}")
+
+import pdfplumber
+import re
+import pandas as pd
+
+pdf_path = "2017queensbldgs.pdf"
+# 1. Read the first page and split into lines
+with pdfplumber.open(pdf_path) as pdf:
+    text = pdf.pages[0].extract_text()
+
+lines = text.split("\n")
+header_line = lines[1]
+data_lines = lines[2:]  # everything after the header
+
+# 2. Get the field names and their start positions
+field_names = header_line.split()
+# Find the starting index of each header token in the raw header line
+positions = [m.start() for m in re.finditer(r'\S+', header_line)]
+
+# 3. Parse each data line by slicing at those positions
+rows = []
+for line in data_lines:
+    if not line.strip():
+        continue  # skip blank lines
+    row = {}
+    for i, name in enumerate(field_names):
+        start = positions[i]
+        end = positions[i+1] if i+1 < len(positions) else None
+        row[name] = line[start:end].strip()
+    rows.append(row)
+
+# 4. Create a DataFrame and inspect
+df = pd.DataFrame(rows)
+print(df.head())
+print(df.dtypes)
+
+# 5. (Later) convert ZIP, BLDGNO1, BLOCK, LOT to integers, etc.
+
+# 6. Save to Excel
+df.to_excel("2017queensbldgs_rent_stabilized.xlsx", index=False)
+print("✅ Exported to 2017queensbldgs_rent_stabilized.xlsx")
+
+
+import pdfplumber, pandas as pd, re
+from collections import defaultdict
+from pathlib import Path
+
+PDF_PATH = "2017queensbldgs.pdf" #update if needed
+OUT_CSV = "2017queensbldgs.pdf_clean.csv"
+OUT_XLSX = "2017queensbldgs.xlsx"
+COLS = [
+    "ZIP","BLDGNO1","STREET1","STSUFX1","BLDGNO2","STREET2","STSUFX2",
+    "CITY","COUNTY","STATUS1","STATUS2","STATUS3","BLOCK","LOT"
+]
+HEADER_TOKENS = set(COLS)
+
+def get_column_edges_from_header(page):
+    # Find the header words and sort left-to-right to define column anchors
+    words = page.extract_words(x_tolerance=1.5, y_tolerance=1.5, keep_blank_chars=False)
+    header_words = [w for w in words if w["text"] in HEADER_TOKENS]
+    if len(header_words) < 10:
+        # Fallback: sometimes header gets split; widen tolerance and retry
+        words = page.extract_words(x_tolerance=2.5, y_tolerance=2.5, keep_blank_chars=False)
+        header_words = [w for w in words if w["text"] in HEADER_TOKENS]
+    header_words = sorted(header_words, key=lambda w: w["x0"])
+    xs = [w["x0"] for w in header_words]
+    if not xs:
+        return None, None
+    # Build column boundaries between header word starts
+    # Start a little to the left of the first header, end at page width
+    left_margin = max(0, xs[0] - 4)
+    edges = [left_margin] + [(xs[i] + xs[i+1]) / 2 for i in range(len(xs)-1)] + [page.width]
+    header_top = min(w["top"] for w in header_words)
+    header_bottom = max(w["bottom"] for w in header_words)
+    return edges, (header_top, header_bottom)
+
+def is_footer_or_metadata(text_line):
+    t = text_line.lower()
+    return (
+        "2017-Bldg-Queens stabilized building list" in t
+        or "source: 2017 dhcr bldg. registration file" in t
+        or "nyc.gov/site/rentguidelinesboard" in t
+        or re.search(r"\b\d+\s+of\s+\d+\b", t)  # "13 of 149", etc.
+    )
+
+def looks_like_data_row(cols):
+    # Basic sanity checks for this dataset
+    if len(cols) != len(COLS):
+        return False
+    zip_ok = bool(re.fullmatch(r"\d{5}", cols[0] or ""))
+    # BLOCK and LOT are numeric-ish; lots like "7501" appear often
+    block_ok = bool(re.fullmatch(r"\d{1,5}", (cols[-2] or "")))
+    lot_ok = bool(re.fullmatch(r"\d{1,6}", (cols[-1] or "")))
+    return zip_ok and block_ok and lot_ok
+
+all_rows = []
+
+with pdfplumber.open(PDF_PATH) as pdf:
+    for page in pdf.pages:
+        edges, header_box = get_column_edges_from_header(page)
+        if edges is None:
+            continue
+
+        # Pull all words on the page
+        words = page.extract_words(use_text_flow=True, x_tolerance=2.0, y_tolerance=2.0)
+        # Group by line (approximate by rounded y)
+        lines = defaultdict(list)
+        for w in words:
+            lines[round(w["top"])].append(w)
+
+        for y, ws in sorted(lines.items()):
+            # Reconstruct the line's plain text for fast skips
+            line_text = " ".join(w["text"] for w in sorted(ws, key=lambda z: z["x0"]))
+            # Skip header line(s) and footer/meta
+            if any(tok in HEADER_TOKENS for tok in line_text.split()):
+                continue
+            if is_footer_or_metadata(line_text):
+                continue
+
+            # Bin words into columns by x position
+            cols_text = [""] * len(COLS)
+            for w in sorted(ws, key=lambda z: z["x0"]):
+                x = w["x0"]
+                # Find the column bucket
+                for i in range(len(COLS)):
+                    if edges[i] <= x < edges[i+1]:
+                        # Append with space between multi-word values
+                        if cols_text[i]:
+                            cols_text[i] += " "
+                        cols_text[i] += w["text"]
+                        break
+
+            # Heuristic: drop empty/near-empty lines early
+            if not cols_text[0].strip():
+                continue
+
+            # Keep only plausible data rows
+            if looks_like_data_row(cols_text):
+                all_rows.append([c.strip() for c in cols_text])
+
+# Build DataFrame and write outputs (keep everything as text to avoid coercion)
+df = pd.DataFrame(all_rows, columns=COLS).astype(str)
+df.to_csv(OUT_CSV, index=False)
+df.to_excel(OUT_XLSX, index=False)
+
+print(f"Rows: {len(df):,}, Columns: {len(df.columns)}")
+print("Saved:", OUT_CSV, "and", OUT_XLSX)
+
+
+
+
